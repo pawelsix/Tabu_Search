@@ -1,0 +1,291 @@
+
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#include <curand_kernel.h>
+#include <iostream>
+#include <ctime>
+#include <stdio.h>
+#include <vector>
+
+cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+
+// Struktura do przechowywania stanu plecaka
+struct KnapsackState {
+    int value;      // Całkowita wartość plecaka
+    int weight;     // Całkowita waga plecaka
+    bool* items;    // Stan przedmiotów: true jeśli przedmiot jest w plecaku
+};
+
+int maxIterations; // Maksymalna liczba iteracji
+int noImprovementIterations; // Liczba iteracji bez poprawy
+int improvementThreshold; // Próg poprawy
+
+__global__ void init(unsigned int seed, curandState_t* states) {
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    curand_init(seed, index, 0, &states[index]);
+}
+
+__global__ void tabuSearch(curandState_t* states, int* weights, int* values, int itemCount, int capacity, KnapsackState* solutions, int* tabuList, int maxIterations, float alpha, int* bestSolution, int* bestValue) {
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if (index < itemCount) {
+        curandState_t state = states[index];
+        // Ustalenie czasu trwania tabu
+        const int someTabuDuration = 5;
+        // Inicjalizacja stanu plecaka
+        KnapsackState currentSolution;
+        currentSolution.value = 0;
+        currentSolution.weight = 0;
+        currentSolution.items = new bool[itemCount];
+        for (int i = 0; i < itemCount; ++i) {
+            currentSolution.items[i] = (curand_uniform(&state) > 0.5f); // Losowe wybieranie przedmiotów
+        }
+
+        int localBestValue = 0;
+        int lastBestValue = 0; // Ostatnia najlepsza wartość do obliczania 'delta'
+        int localNoImprovement = 0; // Liczba iteracji bez poprawy
+        bool* localBestItems = new bool[itemCount];
+
+        for (int iter = 0; iter < maxIterations; ++iter) {
+            // Eksploracja sąsiedztwa
+            int itemIndex = curand(&state) % itemCount; // Losowy przedmiot do dodania/usunięcia
+            currentSolution.items[itemIndex] = !currentSolution.items[itemIndex]; // Zmiana stanu przedmiotu
+
+            // Obliczanie wartości i wagi aktualnego rozwiązania
+            int currentValue = 0;
+            int currentWeight = 0;
+            for (int i = 0; i < itemCount; ++i) {
+                if (currentSolution.items[i]) {
+                    currentValue += values[i];
+                    currentWeight += weights[i];
+                }
+            }
+
+            // Sprawdzenie, czy rozwiązanie jest dozwolone
+            if (currentWeight <= capacity && currentValue > localBestValue) {
+                localBestValue = currentValue;
+                for (int i = 0; i < itemCount; ++i) {
+                    localBestItems[i] = currentSolution.items[i];
+                }
+            }
+
+            for (int iter = 0; iter < maxIterations; ++iter) {
+                // ... (eksploracja sąsiedztwa i obliczanie wartości) ...
+                int itemIndex = curand(&state) % itemCount;
+
+                // Sprawdzenie, czy przedmiot nie jest na liście tabu lub spełnione są kryteria aspiracji
+                if (tabuList[itemIndex] == 0 /* lub kryteria aspiracji */) {
+                    // Zmiana stanu przedmiotu (dodanie lub usunięcie)
+                    currentSolution.items[itemIndex] = !currentSolution.items[itemIndex];
+
+                    // Obliczanie nowej wartości i wagi plecaka
+                    int newValue = 0;
+                    int newWeight = 0;
+                    for (int i = 0; i < itemCount; ++i) {
+                        if (currentSolution.items[i]) {
+                            newValue += values[i];
+                            newWeight += weights[i];
+                        }
+                    }
+
+                    // Sprawdzenie, czy nowe rozwiązanie jest dozwolone (nie przekracza pojemności plecaka)
+                    if (newWeight <= capacity) {
+                        // Aktualizacja, jeśli nowe rozwiązanie jest lepsze
+                        if (newValue > currentSolution.value) {
+                            currentSolution.value = newValue;
+                            currentSolution.weight = newWeight;
+                        }
+                        else {
+                            // Cofnięcie zmiany, jeśli nowe rozwiązanie nie jest lepsze
+                            currentSolution.items[itemIndex] = !currentSolution.items[itemIndex];
+                        }
+                    }
+                    else {
+                        // Cofnięcie zmiany, jeśli nowe rozwiązanie przekracza pojemność plecaka
+                        currentSolution.items[itemIndex] = !currentSolution.items[itemIndex];
+                    }
+                }
+                // Aktualizacja listy tabu
+                if (currentSolution.items[itemIndex]) {
+                    tabuList[itemIndex] = someTabuDuration; // Zakładamy, że przedmiot został dodany
+                }
+                else {
+                    tabuList[itemIndex] = 0; // Resetowanie, jeśli przedmiot został usunięty
+                }
+
+                // Sprawdzenie kryteriów zakończenia
+                bool stopConditionMet = false;
+
+                // Kryterium 1: Osiągnięcie maksymalnej liczby iteracji
+                if (iter == maxIterations - 1) {
+                    stopConditionMet = true;
+                }
+
+                // Kryterium 2: Brak poprawy najlepszego rozwiązania
+                // Zakładając, że 'localNoImprovement' śledzi liczbę iteracji bez poprawy dla tego wątku
+                if (localNoImprovement >= noImprovementIterations) {
+                    stopConditionMet = true;
+                }
+
+                // Kryterium 3: Spełnienie kryterium zbieżności
+                // Zakładając, że 'delta' to różnica między obecnym a poprzednim najlepszym rozwiązaniem
+                if (delta < improvementThreshold) {
+                    stopConditionMet = true;
+                }
+
+                if (stopConditionMet) {
+                    break;
+                }
+            }
+        }
+
+        // Aktualizacja globalnego najlepszego rozwiązania
+        atomicMax(bestValue, localBestValue);
+        if (*bestValue == localBestValue) {
+            for (int i = 0; i < itemCount; ++i) {
+                bestSolution[i] = localBestItems[i];
+            }
+        }
+
+        // Sprzątanie
+        delete[] currentSolution.items;
+        delete[] localBestItems;
+    }
+}
+
+
+
+int main() {
+    int N = 1024; // Liczba elementów, np. przedmiotów w problemie plecakowym
+    float* tabuList;
+    float alpha = 0.99; // Przykładowy współczynnik chłodzenia
+    float cpuBestCost;
+    float* gpuBestCost;
+
+    // Rejestrowanie czasu wykonania
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // Alokacja pamięci dla listy tabu
+    cudaMalloc((void**)&tabuList, N * sizeof(float));
+
+    // Inicjalizacja generatorów liczb losowych
+    curandState_t* states;
+    cudaMalloc((void**)&states, N * sizeof(curandState_t));
+    init << <(N + 255) / 256, 256 >> > (time(0), states);
+
+    // Sprawdzanie błędów
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        std::cerr << "CUDA error: " << cudaGetErrorString(error) << std::endl;
+        return -1;
+    }
+
+    // Alokacja pamięci dla najlepszego kosztu na GPU
+    cudaMalloc((void**)&gpuBestCost, sizeof(float));
+
+    // Uruchomienie algorytmu Tabu Search
+    cudaEventRecord(start);
+    tabuSearch << <(N + 255) / 256, 256 >> > (states, tabuList, alpha, N);
+    cudaEventRecord(stop);
+
+    // Pobieranie najlepszego kosztu
+    cudaMemcpy(&cpuBestCost, gpuBestCost, sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Czyszczenie
+    cudaFree(states);
+    cudaFree(tabuList);
+    cudaFree(gpuBestCost);
+
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    std::cout << "Best cost found: " << cpuBestCost << std::endl;
+    std::cout << "Execution time: " << milliseconds << " ms" << std::endl;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    return 0;
+}
+
+// Helper function for using CUDA to add vectors in parallel.
+cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
+{
+    int *dev_a = 0;
+    int *dev_b = 0;
+    int *dev_c = 0;
+    cudaError_t cudaStatus;
+
+    // Choose which GPU to run on, change this on a multi-GPU system.
+    cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        goto Error;
+    }
+
+    // Allocate GPU buffers for three vectors (two input, one output)    .
+    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    // Copy input vectors from host memory to GPU buffers.
+    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    // Launch a kernel on the GPU with one thread for each element.
+    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
+
+    // Check for any errors launching the kernel
+    cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+    
+    // cudaDeviceSynchronize waits for the kernel to finish, and returns
+    // any errors encountered during the launch.
+    cudaStatus = cudaDeviceSynchronize();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        goto Error;
+    }
+
+    // Copy output vector from GPU buffer to host memory.
+    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+Error:
+    cudaFree(dev_c);
+    cudaFree(dev_a);
+    cudaFree(dev_b);
+    
+    return cudaStatus;
+}

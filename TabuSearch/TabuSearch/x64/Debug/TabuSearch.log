@@ -1,0 +1,23 @@
+﻿  Compiling CUDA source file kernel.cu...
+  
+  C:\Users\golob\source\repos\TabuSearch\TabuSearch>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\bin\nvcc.exe" -gencode=arch=compute_52,code=\"sm_52,compute_52\" --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\bin\HostX64\x64" -x cu   -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\include"  -G   --keep-dir x64\Debug  -maxrregcount=0   --machine 64 --compile -cudart static  -g  -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/Fdx64\Debug\vc143.pdb" -o C:\Users\golob\source\repos\TabuSearch\TabuSearch\x64\Debug\kernel.cu.obj "C:\Users\golob\source\repos\TabuSearch\TabuSearch\kernel.cu" 
+C:\Users\golob\source\repos\TabuSearch\TabuSearch\kernel.cu(129): warning #780-D: reference is to variable "i" (declared at line 100) -- under old for-init scoping rules it would have been variable "i" (declared at line 123)
+            std::cout << "Block size: " << blockSizes[i] << ", Best cost found: " << cpuBestCost << ", Execution time: " << milliseconds << " ms" << std::endl;
+                                                      ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+C:\Users\golob\source\repos\TabuSearch\TabuSearch\kernel.cu(16): warning #550-D: variable "bestSolutionWeight" was set but never used
+            int bestSolutionWeight = 0;
+                ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+C:\Users\golob\source\repos\TabuSearch\TabuSearch\kernel.cu(129): warning #780-D: reference is to variable "i" (declared at line 100) -- under old for-init scoping rules it would have been variable "i" (declared at line 123)
+            std::cout << "Block size: " << blockSizes[i] << ", Best cost found: " << cpuBestCost << ", Execution time: " << milliseconds << " ms" << std::endl;
+                                                      ^
+  
+  kernel.cu
+  tmpxft_000052e4_00000000-7_kernel.cudafe1.cpp
+C:\Users\golob\source\repos\TabuSearch\TabuSearch\kernel.cu(79): warning C4244: "argument": konwersja z "time_t" do "unsigned int", możliwa utrata danych
+  TabuSearch.vcxproj -> C:\Users\golob\source\repos\TabuSearch\x64\Debug\TabuSearch.exe
